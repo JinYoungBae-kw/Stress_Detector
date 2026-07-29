@@ -11,8 +11,8 @@ from sklearn.svm import SVC
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-FEATURE_DIR = PROJECT_ROOT / "data" / "features" / "4.0_peak_corrected"
-OUTPUT_DIR = PROJECT_ROOT / "outputs" / "4.0_peak_corrected"
+FEATURE_DIR = PROJECT_ROOT / "data" / "features" / "3.5_peak_corrected"
+OUTPUT_DIR = PROJECT_ROOT / "outputs" / "3.5_peak_corrected"
 
 STRESS_LABEL = 0
 NONSTRESS_LABEL = 1

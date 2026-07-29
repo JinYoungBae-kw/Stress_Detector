@@ -3,6 +3,9 @@ import json
 from pathlib import Path
 
 import joblib
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -69,6 +72,96 @@ def build_model():
     )
 
 
+def stress_decision_scores(model, X):
+    scores = model.decision_function(X)
+    classes = list(model.named_steps["svm"].classes_)
+    if classes == [STRESS_LABEL, NONSTRESS_LABEL]:
+        return -scores
+    if classes == [NONSTRESS_LABEL, STRESS_LABEL]:
+        return scores
+    raise ValueError(f"unexpected SVM classes: {classes}")
+
+
+def compute_and_save_shap(model, X, feature_names, output_dir):
+    try:
+        import shap
+    except ImportError as exc:
+        raise ImportError(
+            "SHAP is required to generate explanation images. "
+            "Install it with: pip install shap"
+        ) from exc
+
+    rng = np.random.default_rng(RANDOM_SEED)
+    background_size = min(50, len(X))
+    explain_size = min(200, len(X))
+
+    background_indices = rng.choice(len(X), size=background_size, replace=False)
+    explain_indices = rng.choice(len(X), size=explain_size, replace=False)
+    background = X[background_indices]
+    X_explain = X[explain_indices]
+
+    explainer = shap.KernelExplainer(lambda values: stress_decision_scores(model, values), background)
+    shap_values = explainer.shap_values(X_explain, nsamples="auto")
+    shap_values = np.asarray(shap_values, dtype=np.float64)
+
+    shap_dir = output_dir / "shap"
+    shap_dir.mkdir(parents=True, exist_ok=True)
+
+    np.savez_compressed(
+        shap_dir / "shap_values.npz",
+        shap_values=shap_values,
+        X_explain=X_explain,
+        feature_names=np.asarray(feature_names),
+        background_indices=background_indices,
+        explain_indices=explain_indices,
+    )
+
+    mean_abs = np.mean(np.abs(shap_values), axis=0)
+    order = np.argsort(mean_abs)[::-1]
+    rows = [
+        {
+            "rank": int(rank + 1),
+            "feature": feature_names[index],
+            "mean_abs_shap": float(mean_abs[index]),
+        }
+        for rank, index in enumerate(order)
+    ]
+    write_csv(
+        shap_dir / "shap_feature_importance.csv",
+        rows,
+        ["rank", "feature", "mean_abs_shap"],
+    )
+
+    plt.figure(figsize=(9, 5))
+    shap.summary_plot(
+        shap_values,
+        X_explain,
+        feature_names=feature_names,
+        plot_type="bar",
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(shap_dir / "shap_summary_bar.png", dpi=200, bbox_inches="tight")
+    plt.close()
+
+    plt.figure(figsize=(9, 6))
+    shap.summary_plot(
+        shap_values,
+        X_explain,
+        feature_names=feature_names,
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(shap_dir / "shap_summary_beeswarm.png", dpi=200, bbox_inches="tight")
+    plt.close()
+
+    return {
+        "background_size": int(background_size),
+        "explain_size": int(explain_size),
+        "shap_dir": str(shap_dir),
+    }
+
+
 def write_csv(path, rows, fieldnames):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as file:
@@ -106,6 +199,8 @@ def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     model_path = OUTPUT_DIR / "svm_pipeline.joblib"
     joblib.dump(model, model_path)
+
+    shap_info = compute_and_save_shap(model, X, feature_names, OUTPUT_DIR)
 
     subject_rows = []
     for subject_data in subjects:
@@ -163,6 +258,7 @@ def main():
             "peak_correction": "short NN interval correction",
             "nn_interval_valid_range_sec": [0.3, 2.0],
         },
+        "shap": shap_info,
     }
 
     with (OUTPUT_DIR / "config.json").open("w", encoding="utf-8") as file:
@@ -184,6 +280,7 @@ def main():
     print(f"feature_dir: {FEATURE_DIR}")
     print(f"output_dir: {OUTPUT_DIR}")
     print(f"model saved: {model_path}")
+    print(f"shap results: {shap_info['shap_dir']}")
     print(f"subjects: {len(subjects)}")
     print(f"training samples: {len(y)}")
     print(f"stress samples: {int(np.sum(y == STRESS_LABEL))}")

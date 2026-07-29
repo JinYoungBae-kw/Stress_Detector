@@ -69,6 +69,17 @@ def stress_decision_scores(model, X):
     raise ValueError(f"unexpected SVM classes: {classes}")
 
 
+def stress_intensity_scores(stress_scores):
+    """Convert SVM stress decision scores to user-facing 0-100 stress scores.
+
+    This function is intentionally separated so the scoring rule can be changed
+    later without touching classification logic. The current rule is a simple
+    sigmoid mapping: larger stress-side decision scores produce higher values.
+    """
+    stress_scores = np.asarray(stress_scores, dtype=np.float64)
+    return 100.0 / (1.0 + np.exp(-stress_scores))
+
+
 def stress_auc_score(y_true, stress_scores):
     stress_binary = (y_true == STRESS_LABEL).astype(np.int8)
     if len(np.unique(stress_binary)) < 2:
@@ -123,6 +134,7 @@ def main():
         X = subject_data["X"]
         y_pred = model.predict(X)
         stress_scores = stress_decision_scores(model, X)
+        stress_scores_0_100 = stress_intensity_scores(stress_scores)
         has_label = "y" in subject_data
 
         row = {
@@ -175,6 +187,7 @@ def main():
                 "y_pred": pred,
                 "prediction": pred_name,
                 "stress_score": float(stress_scores[local_index]),
+                "stress_score_0_100": float(stress_scores_0_100[local_index]),
             }
             if has_label:
                 truth = int(subject_data["y"][local_index])
@@ -245,6 +258,7 @@ def main():
         "y_pred",
         "prediction",
         "stress_score",
+        "stress_score_0_100",
         "correct",
     ]
 

@@ -1,32 +1,46 @@
-# Python
+# Python cache / environment
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .venv/
 venv/
+env/
 
-# Data
-data/raw/
-data/labeled/
-data/preprocessed/
-data/windowed/
-data/peaks/
-data/interval/
-data/features/
+# Local data
+# WESAD/raw data, processed signals, windows, peaks, intervals, and features
+# are not included in the public repository.
+data/
 
-# Large files
+# Outputs / trained artifacts
+outputs/
+
+# Large or generated analysis files
 *.pkl
 *.npz
+*.npy
+*.joblib
+*.pickle
+*.csv
 *.csv.gz
-
-# Outputs
-outputs/*/predictions.csv
-outputs/*/metadata.npz
-outputs/classification/
+*.xlsx
+*.pdf
+*.pptx
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.webp
 
 # OS/editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# Notebook/runtime noise
+.ipynb_checkpoints/
+
+# Local secrets/config
+.env
+.env.*
