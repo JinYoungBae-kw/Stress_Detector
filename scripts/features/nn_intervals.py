@@ -1,3 +1,4 @@
+import argparse
 import csv
 from pathlib import Path
 
@@ -6,13 +7,12 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-INPUT_DIR = PROJECT_ROOT / "data" / "peaks" / "4.0"
-OUTPUT_DIR = PROJECT_ROOT / "data" / "interval" / "4.0_peak_corrected"
+INPUT_DIR = PROJECT_ROOT / "data" / "features" / "peaks"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "features" / "intervals"
 
 LOWER_NN_SEC = 0.30
 UPPER_NN_SEC = 2.00
 MAX_DELETIONS_PER_WINDOW = 200
-OVERWRITE = True
 
 
 def subject_sort_key(path):
@@ -159,8 +159,8 @@ def correct_window_peaks(peak_indices, peak_values, bvp_hz, lower_sec, upper_sec
     }
 
 
-def process_subject(npz_path, output_path):
-    if output_path.exists() and not OVERWRITE:
+def process_subject(npz_path, output_path, overwrite=False):
+    if output_path.exists() and not overwrite:
         raise FileExistsError(f"output already exists: {output_path}")
 
     data = np.load(npz_path, allow_pickle=True)
@@ -252,7 +252,11 @@ def process_subject(npz_path, output_path):
         bvp_hz=data["bvp_hz"],
         window_seconds=data["window_seconds"],
         stride_seconds=data["stride_seconds"],
-        window_function=data["window_function"] if "window_function" in data else np.asarray("unknown"),
+        window_function=(
+            data["window_function"]
+            if "window_function" in data
+            else np.asarray("unknown")
+        ),
         correction_method=np.asarray("short_interval_delete_peak_by_local_naturalness"),
         lower_nn_sec=np.asarray(LOWER_NN_SEC),
         upper_nn_sec=np.asarray(UPPER_NN_SEC),
@@ -308,17 +312,47 @@ def write_summary(summary_path, rows):
 
 
 def main():
-    npz_paths = sorted(INPUT_DIR.glob("S*.npz"), key=subject_sort_key)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Correct short peak intervals and calculate NN intervals "
+            "for each BVP window."
+        )
+    )
+    parser.add_argument(
+        "--input-dir",
+        type=Path,
+        default=INPUT_DIR,
+        help="Directory containing detected peak NPZ files.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=OUTPUT_DIR,
+        help="Directory to write corrected peak and NN interval NPZ files.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing interval NPZ files and summary.csv.",
+    )
+    args = parser.parse_args()
+
+    npz_paths = sorted(args.input_dir.glob("S*.npz"), key=subject_sort_key)
     if not npz_paths:
-        raise FileNotFoundError(f"no peak NPZ files found in {INPUT_DIR}")
+        raise FileNotFoundError(f"no peak NPZ files found in {args.input_dir}")
 
-    if OUTPUT_DIR.exists() and not OVERWRITE:
-        existing_outputs = list(OUTPUT_DIR.glob("*.npz")) + list(OUTPUT_DIR.glob("summary.csv"))
+    if args.output_dir.exists() and not args.overwrite:
+        existing_outputs = list(args.output_dir.glob("*.npz")) + list(
+            args.output_dir.glob("summary.csv")
+        )
         if existing_outputs:
-            raise FileExistsError(f"output directory already contains files: {OUTPUT_DIR}")
+            raise FileExistsError(
+                f"output directory already contains files: {args.output_dir} "
+                "(use --overwrite to replace them)"
+            )
 
-    print(f"input_dir: {INPUT_DIR}")
-    print(f"output_dir: {OUTPUT_DIR}")
+    print(f"input_dir: {args.input_dir}")
+    print(f"output_dir: {args.output_dir}")
     print(f"correction range: short < {LOWER_NN_SEC}s, long > {UPPER_NN_SEC}s")
     print("correction: only short intervals are corrected by deleting one nearby peak")
     print(f"subjects: {len(npz_paths)}")
@@ -326,11 +360,21 @@ def main():
 
     rows = []
     for npz_path in npz_paths:
-        row = process_subject(npz_path, OUTPUT_DIR / npz_path.name)
+        row = process_subject(
+            npz_path,
+            args.output_dir / npz_path.name,
+            overwrite=args.overwrite,
+        )
         rows.append(row)
         print(f"[ok] {row['subject']}")
-        print(f"  before short/long: {row['before_short_count']}/{row['before_long_count']}")
-        print(f"  after short/long:  {row['after_short_count']}/{row['after_long_count']}")
+        print(
+            "  before short/long: "
+            f"{row['before_short_count']}/{row['before_long_count']}"
+        )
+        print(
+            "  after short/long:  "
+            f"{row['after_short_count']}/{row['after_long_count']}"
+        )
         print(
             "  abnormal ratio: "
             f"{row['before_abnormal_ratio'] * 100:.4f}% -> "
@@ -339,7 +383,7 @@ def main():
         print(f"  deleted peaks: {row['deleted_peak_count']}")
         print()
 
-    write_summary(OUTPUT_DIR / "summary.csv", rows)
+    write_summary(args.output_dir / "summary.csv", rows)
 
     total_before_intervals = sum(row["before_intervals"] for row in rows)
     total_after_intervals = sum(row["after_intervals"] for row in rows)
@@ -350,8 +394,16 @@ def main():
     total_deleted = sum(row["deleted_peak_count"] for row in rows)
     total_before_abnormal = total_before_short + total_before_long
     total_after_abnormal = total_after_short + total_after_long
-    before_ratio = total_before_abnormal / total_before_intervals if total_before_intervals else 0.0
-    after_ratio = total_after_abnormal / total_after_intervals if total_after_intervals else 0.0
+    before_ratio = (
+        total_before_abnormal / total_before_intervals
+        if total_before_intervals
+        else 0.0
+    )
+    after_ratio = (
+        total_after_abnormal / total_after_intervals
+        if total_after_intervals
+        else 0.0
+    )
 
     print("[total]")
     print(f"before short count: {total_before_short}")
@@ -361,7 +413,7 @@ def main():
     print(f"before abnormal ratio: {before_ratio * 100:.4f}%")
     print(f"after abnormal ratio:  {after_ratio * 100:.4f}%")
     print(f"deleted peak count: {total_deleted}")
-    print(f"summary: {OUTPUT_DIR / 'summary.csv'}")
+    print(f"summary: {args.output_dir / 'summary.csv'}")
 
 
 if __name__ == "__main__":

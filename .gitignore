@@ -1,46 +1,49 @@
-# Python cache / environment
+# Python bytecode and caches
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
 .venv/
 venv/
 env/
 
-# Local data
-# WESAD/raw data, processed signals, windows, peaks, intervals, and features
-# are not included in the public repository.
-data/
+# Packaging
+build/
+dist/
+*.egg-info/
 
-# Outputs / trained artifacts
-outputs/
+# Local WESAD data and generated intermediates
+data/*
+!data/README.md
 
-# Large or generated analysis files
+# Generated evaluation, model, and SHAP artifacts
+outputs/*
+!outputs/README.md
+
+# Serialized scientific artifacts outside the standard folders
 *.pkl
-*.npz
-*.npy
-*.joblib
 *.pickle
-*.csv
-*.csv.gz
-*.xlsx
-*.pdf
-*.pptx
-*.png
-*.jpg
-*.jpeg
-*.svg
-*.webp
+*.npy
+*.npz
+*.joblib
 
-# OS/editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# Notebook/runtime noise
+# Notebooks and runtime files
 .ipynb_checkpoints/
+*.log
 
-# Local secrets/config
+# Local configuration and secrets
 .env
 .env.*
+!.env.example
+
+# IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

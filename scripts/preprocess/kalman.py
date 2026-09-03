@@ -7,8 +7,8 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-INPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "bandpass" / "3.5"
-OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "kalman" / "3.5"
+INPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "bandpass"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "kalman"
 
 PROCESS_VARIANCE = 1e-5
 MEASUREMENT_VARIANCE = 1e-2

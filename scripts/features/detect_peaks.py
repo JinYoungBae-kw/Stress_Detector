@@ -7,8 +7,8 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-INPUT_DIR = PROJECT_ROOT / "data" / "windowed" / "3.5"
-OUTPUT_DIR = PROJECT_ROOT / "data" / "peaks" / "3.5"
+INPUT_DIR = PROJECT_ROOT / "data" / "windowed"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "features" / "peaks"
 
 
 def subject_sort_key(path):
@@ -84,7 +84,11 @@ def process_subject(npz_path, output_path, overwrite=False):
         bvp_hz=data["bvp_hz"],
         window_seconds=data["window_seconds"],
         stride_seconds=data["stride_seconds"],
-        window_function=data["window_function"] if "window_function" in data else np.asarray("unknown"),
+        window_function=(
+            data["window_function"]
+            if "window_function" in data
+            else np.asarray("unknown")
+        ),
         threshold_scope=np.asarray("subject_windowed_signal_mean"),
         threshold_value=np.asarray(threshold),
         source_npz=np.asarray(str(npz_path)),

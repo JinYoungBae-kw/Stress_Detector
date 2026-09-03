@@ -9,8 +9,8 @@ from scipy.signal import welch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-INPUT_DIR = PROJECT_ROOT / "data" / "interval" / "4.0_peak_corrected"
-OUTPUT_DIR = PROJECT_ROOT / "data" / "features" / "4.0_peak_corrected"
+INPUT_DIR = PROJECT_ROOT / "data" / "features" / "intervals"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "features" / "train_features"
 
 TIME_DOMAIN_FEATURE_NAMES = [
     "hrm_bpm",
@@ -291,7 +291,11 @@ def process_subject(npz_path, output_path, overwrite=False):
         bvp_hz=data["bvp_hz"],
         window_seconds=data["window_seconds"],
         stride_seconds=data["stride_seconds"],
-        window_function=data["window_function"] if "window_function" in data else np.asarray("unknown"),
+        window_function=(
+            data["window_function"]
+            if "window_function" in data
+            else np.asarray("unknown")
+        ),
         hrv_interp_fs=np.asarray(HRV_INTERP_FS),
         welch_nperseg=np.asarray(str(WELCH_NPERSEG)),
         frequency_bands=np.asarray(

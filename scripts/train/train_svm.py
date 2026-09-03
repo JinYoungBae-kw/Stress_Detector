@@ -1,7 +1,14 @@
 import argparse
 import csv
+import json
 from pathlib import Path
 
+import joblib
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
 from sklearn.pipeline import Pipeline
@@ -11,8 +18,10 @@ from sklearn.svm import SVC
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-FEATURE_DIR = PROJECT_ROOT / "data" / "features" / "3.5_peak_corrected"
-OUTPUT_DIR = PROJECT_ROOT / "outputs" / "3.5_peak_corrected"
+FEATURE_DIR = PROJECT_ROOT / "data" / "features" / "train_features"
+TRAIN_RESULT_DIR = PROJECT_ROOT / "outputs" / "train_result"
+MODEL_DIR = PROJECT_ROOT / "outputs" / "model"
+SHAP_DIR = PROJECT_ROOT / "outputs" / "shap"
 
 STRESS_LABEL = 0
 NONSTRESS_LABEL = 1
@@ -97,6 +106,153 @@ def stress_auc_score(y_true, stress_scores):
     return float(roc_auc_score(stress_binary, stress_scores))
 
 
+def compute_and_save_shap(model, X, feature_names, output_dir, seed):
+    try:
+        import shap
+    except ImportError as exc:
+        raise ImportError(
+            "SHAP is required to generate explanation results. "
+            "Install it with: pip install shap"
+        ) from exc
+
+    rng = np.random.default_rng(seed)
+    background_size = min(50, len(X))
+    explain_size = min(200, len(X))
+    background_indices = rng.choice(len(X), size=background_size, replace=False)
+    explain_indices = rng.choice(len(X), size=explain_size, replace=False)
+    background = X[background_indices]
+    X_explain = X[explain_indices]
+
+    explainer = shap.KernelExplainer(
+        lambda values: stress_decision_scores(model, values),
+        background,
+    )
+    shap_values = np.asarray(
+        explainer.shap_values(X_explain, nsamples="auto"),
+        dtype=np.float64,
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        output_dir / "shap_values.npz",
+        shap_values=shap_values,
+        X_explain=X_explain,
+        feature_names=np.asarray(feature_names),
+        background_indices=background_indices,
+        explain_indices=explain_indices,
+    )
+
+    mean_abs = np.mean(np.abs(shap_values), axis=0)
+    order = np.argsort(mean_abs)[::-1]
+    write_csv(
+        output_dir / "shap_feature_importance.csv",
+        [
+            {
+                "rank": rank + 1,
+                "feature": feature_names[index],
+                "mean_abs_shap": float(mean_abs[index]),
+            }
+            for rank, index in enumerate(order)
+        ],
+        ["rank", "feature", "mean_abs_shap"],
+    )
+
+    plt.figure(figsize=(9, 5))
+    shap.summary_plot(
+        shap_values,
+        X_explain,
+        feature_names=feature_names,
+        plot_type="bar",
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(output_dir / "shap_summary_bar.png", dpi=200, bbox_inches="tight")
+    plt.close()
+
+    plt.figure(figsize=(9, 6))
+    shap.summary_plot(
+        shap_values,
+        X_explain,
+        feature_names=feature_names,
+        show=False,
+    )
+    plt.tight_layout()
+    plt.savefig(output_dir / "shap_summary_beeswarm.png", dpi=200, bbox_inches="tight")
+    plt.close()
+
+    return {
+        "background_size": int(background_size),
+        "explain_size": int(explain_size),
+    }
+
+
+def train_and_save_full_model(
+    subjects,
+    feature_names,
+    class_weight,
+    seed,
+    model_dir,
+    shap_dir,
+):
+    X = np.vstack([subject_data["X"] for subject_data in subjects])
+    y = np.concatenate([subject_data["y"] for subject_data in subjects])
+
+    model = build_model(class_weight, seed)
+    model.fit(X, y)
+
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_dir / "svm_pipeline.joblib"
+    joblib.dump(model, model_path)
+
+    scaler = model.named_steps["scaler"]
+    svm = model.named_steps["svm"]
+    parameter_path = model_dir / "svm_parameters.npz"
+    np.savez_compressed(
+        parameter_path,
+        scaler_mean=scaler.mean_,
+        scaler_scale=scaler.scale_,
+        support_vectors=svm.support_vectors_,
+        support_indices=svm.support_,
+        dual_coef=svm.dual_coef_,
+        intercept=svm.intercept_,
+        n_support=svm.n_support_,
+        classes=svm.classes_,
+        feature_names=np.asarray(feature_names),
+    )
+
+    shap_info = compute_and_save_shap(
+        model,
+        X,
+        feature_names,
+        shap_dir,
+        seed,
+    )
+
+    metadata = {
+        "model_path": str(model_path),
+        "parameter_path": str(parameter_path),
+        "training_scope": "all available subjects after LOSO evaluation",
+        "subjects": [subject_data["subject"] for subject_data in subjects],
+        "training_samples": int(len(y)),
+        "stress_samples": int(np.sum(y == STRESS_LABEL)),
+        "nonstress_samples": int(np.sum(y == NONSTRESS_LABEL)),
+        "feature_names": feature_names,
+        "random_seed": seed,
+        "model": {
+            "pipeline": "StandardScaler + SVC",
+            "kernel": "rbf",
+            "C": 1.0,
+            "gamma": "scale",
+            "class_weight": class_weight,
+        },
+        "shap": shap_info,
+    }
+    with (model_dir / "model_metadata.json").open("w", encoding="utf-8") as file:
+        json.dump(metadata, file, indent=2, ensure_ascii=False)
+
+    return model_path, parameter_path
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Train and evaluate SVM with Leave-One-Subject-Out validation."
@@ -110,8 +266,20 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=OUTPUT_DIR,
-        help="Directory to write LOSO SVM results.",
+        default=TRAIN_RESULT_DIR,
+        help="Directory to write LOSO SVM evaluation results.",
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=MODEL_DIR,
+        help="Directory to write the model trained on all subjects.",
+    )
+    parser.add_argument(
+        "--shap-dir",
+        type=Path,
+        default=SHAP_DIR,
+        help="Directory to write SHAP explanation results.",
     )
     parser.add_argument(
         "--class-weight",
@@ -133,13 +301,13 @@ def main():
     args = parser.parse_args()
     np.random.seed(args.seed)
 
-    if args.output_dir.exists() and not args.overwrite:
-        existing = list(args.output_dir.glob("*"))
-        if existing:
-            raise FileExistsError(
-                f"output directory already contains files: {args.output_dir} "
-                "(use --overwrite to replace them)"
-            )
+    if not args.overwrite:
+        for output_dir in [args.output_dir, args.model_dir, args.shap_dir]:
+            if output_dir.exists() and any(output_dir.iterdir()):
+                raise FileExistsError(
+                    f"output directory already contains files: {output_dir} "
+                    "(use --overwrite to replace them)"
+                )
 
     npz_paths = sorted(args.feature_dir.glob("S*.npz"), key=subject_sort_key)
     if not npz_paths:
@@ -159,7 +327,9 @@ def main():
     prediction_rows = []
 
     print(f"feature_dir: {args.feature_dir}")
-    print(f"output_dir: {args.output_dir}")
+    print(f"train_result_dir: {args.output_dir}")
+    print(f"model_dir: {args.model_dir}")
+    print(f"shap_dir: {args.shap_dir}")
     print(f"subjects: {len(subjects)}")
     print(f"features: {', '.join(feature_names)}")
     print(
@@ -242,7 +412,10 @@ def main():
         print(f"  accuracy: {row['accuracy']:.4f}")
         print(f"  f1_stress: {row['f1_stress']:.4f}")
         print(f"  auc_stress: {row['auc_stress']:.4f}")
-        print(f"  confusion stress-positive: TP={tp_stress}, FN={fn_stress}, FP={fp_stress}, TN={tn_stress}")
+        print(
+            "  confusion stress-positive: "
+            f"TP={tp_stress}, FN={fn_stress}, FP={fp_stress}, TN={tn_stress}"
+        )
         print()
 
     accuracies = np.asarray([row["accuracy"] for row in fold_rows], dtype=np.float64)
@@ -267,7 +440,11 @@ def main():
         {
             "metric": "auc_stress",
             "mean": float(np.nanmean(auc_scores)),
-            "std": float(np.nanstd(auc_scores, ddof=1)) if np.sum(~np.isnan(auc_scores)) > 1 else 0.0,
+            "std": (
+                float(np.nanstd(auc_scores, ddof=1))
+                if np.sum(~np.isnan(auc_scores)) > 1
+                else 0.0
+            ),
             "min": float(np.nanmin(auc_scores)),
             "max": float(np.nanmax(auc_scores)),
         },
@@ -316,11 +493,26 @@ def main():
         subjects=np.asarray([subject_data["subject"] for subject_data in subjects]),
     )
 
+    model_path, parameter_path = train_and_save_full_model(
+        subjects=subjects,
+        feature_names=feature_names,
+        class_weight=class_weight,
+        seed=args.seed,
+        model_dir=args.model_dir,
+        shap_dir=args.shap_dir,
+    )
+
     print("[summary]")
     print(f"  accuracy mean/std: {np.mean(accuracies):.4f} / {np.std(accuracies, ddof=1):.4f}")
     print(f"  f1_stress mean/std: {np.mean(f1_scores):.4f} / {np.std(f1_scores, ddof=1):.4f}")
-    print(f"  auc_stress mean/std: {np.nanmean(auc_scores):.4f} / {np.nanstd(auc_scores, ddof=1):.4f}")
-    print(f"results written to: {args.output_dir}")
+    print(
+        "  auc_stress mean/std: "
+        f"{np.nanmean(auc_scores):.4f} / {np.nanstd(auc_scores, ddof=1):.4f}"
+    )
+    print(f"training results written to: {args.output_dir}")
+    print(f"full-data model written to: {model_path}")
+    print(f"SVM parameters written to: {parameter_path}")
+    print(f"SHAP results written to: {args.shap_dir}")
 
 
 if __name__ == "__main__":

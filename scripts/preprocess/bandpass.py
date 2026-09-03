@@ -9,7 +9,7 @@ from scipy.signal import butter, sosfiltfilt
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 INPUT_DIR = PROJECT_ROOT / "data" / "labeled"
-OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "bandpass" / "3.5"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "bandpass"
 
 FS = 64
 LOWCUT_HZ = 0.5
@@ -90,7 +90,7 @@ def process_one_pkl(input_pkl_path, output_pkl_path, overwrite=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Apply 0.5-10Hz Butterworth band-pass filtering to wrist BVP."
+        description="Apply 0.5-3.5Hz Butterworth band-pass filtering to wrist BVP."
     )
     parser.add_argument(
         "--input-dir",

@@ -26,15 +26,11 @@ def iter_windows(signal_length, window_samples, stride_samples):
         start += stride_samples
 
 
-def apply_window_function(window, window_function):
-    if window_function == "hanning":
-        return window * np.hanning(len(window))
-    if window_function in ("none", "rectangular"):
-        return window
-    raise ValueError(f"unsupported window function: {window_function}")
+def apply_hanning_window(window):
+    return window * np.hanning(len(window))
 
 
-def process_subject(pkl_path, output_path, window_seconds, stride_seconds, window_function):
+def process_subject(pkl_path, output_path, window_seconds, stride_seconds):
     with pkl_path.open("rb") as file:
         data = pickle.load(file, encoding="latin1")
 
@@ -75,7 +71,7 @@ def process_subject(pkl_path, output_path, window_seconds, stride_seconds, windo
             dropped_ignore += 1
             continue
 
-        window = apply_window_function(bvp[start:end], window_function)
+        window = apply_hanning_window(bvp[start:end])
         windows.append(window)
         labels.append(label)
         starts.append(start)
@@ -105,7 +101,7 @@ def process_subject(pkl_path, output_path, window_seconds, stride_seconds, windo
         bvp_hz=np.asarray(BVP_HZ),
         window_seconds=np.asarray(window_seconds),
         stride_seconds=np.asarray(stride_seconds),
-        window_function=np.asarray(window_function),
+        window_function=np.asarray(WINDOW_FUNCTION),
     )
 
     stress_windows = int(np.sum(y == 0))
@@ -121,7 +117,7 @@ def process_subject(pkl_path, output_path, window_seconds, stride_seconds, windo
         "stride_seconds": stride_seconds,
         "window_samples": window_samples,
         "stride_samples": stride_samples,
-        "window_function": window_function,
+        "window_function": WINDOW_FUNCTION,
         "total_windows": total_windows,
         "kept_windows": len(y),
         "stress_windows": stress_windows,
@@ -165,7 +161,7 @@ def main():
     parser.add_argument(
         "--preprocessed-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "preprocessed" / "all_preprocessed" / "3.5",
+        default=PROJECT_ROOT / "data" / "preprocessed" / "all_preprocessed",
         help=(
             "Directory containing final preprocessed subject PKL files. "
             "Default: <project>/data/preprocessed/all_preprocessed"
@@ -174,7 +170,7 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "windowed" / "3.5",
+        default=PROJECT_ROOT / "data" / "windowed",
         help="Directory to write subject NPZ window files.",
     )
     parser.add_argument(
@@ -193,12 +189,6 @@ def main():
         "--overwrite",
         action="store_true",
         help="Replace existing NPZ files and summary.csv.",
-    )
-    parser.add_argument(
-        "--window-function",
-        choices=["hanning", "rectangular", "none"],
-        default=WINDOW_FUNCTION,
-        help="Window function applied to each extracted BVP window. Default: hanning",
     )
     args = parser.parse_args()
 
@@ -226,7 +216,7 @@ def main():
     print(f"output_dir: {args.output_dir}")
     print(f"window: {args.window_seconds}s")
     print(f"stride: {args.stride_seconds}s")
-    print(f"window_function: {args.window_function}")
+    print(f"window_function: {WINDOW_FUNCTION}")
     print(f"subjects: {len(pkl_paths)}")
     print()
 
@@ -238,7 +228,6 @@ def main():
             output_path=output_path,
             window_seconds=args.window_seconds,
             stride_seconds=args.stride_seconds,
-            window_function=args.window_function,
         )
         rows.append(row)
 

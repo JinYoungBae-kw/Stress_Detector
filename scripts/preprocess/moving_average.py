@@ -8,9 +8,9 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-INPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "kalman" / "3.5"
-OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "moving_average" / "3.5"
-FINAL_OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "all_preprocessed" / "3.5"
+INPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "kalman"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "moving_average"
+FINAL_OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "all_preprocessed"
 
 WINDOW_SIZE = 3
 
