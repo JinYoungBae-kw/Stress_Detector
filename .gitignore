@@ -5,7 +5,11 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
+.tox/
+.nox/
 .coverage
+.coverage.*
 htmlcov/
 
 # Virtual environments
@@ -17,14 +21,16 @@ env/
 build/
 dist/
 *.egg-info/
+.eggs/
+pip-wheel-metadata/
 
 # Local WESAD data and generated intermediates
-data/*
-!data/README.md
+/data/**
+!/data/README.md
 
 # Generated evaluation, model, and SHAP artifacts
-outputs/*
-!outputs/README.md
+/outputs/**
+!/outputs/README.md
 
 # Serialized scientific artifacts outside the standard folders
 *.pkl
@@ -32,10 +38,26 @@ outputs/*
 *.npy
 *.npz
 *.joblib
+*.h5
+*.hdf5
+*.parquet
+*.feather
+
+# Downloaded archives
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.tgz
 
 # Notebooks and runtime files
 .ipynb_checkpoints/
 *.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
 
 # Local configuration and secrets
 .env
@@ -47,3 +69,4 @@ outputs/*
 .idea/
 .DS_Store
 Thumbs.db
+Desktop.ini

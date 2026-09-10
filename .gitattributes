@@ -1,5 +1,8 @@
 * text=auto
 
+.gitattributes text eol=lf
+.gitignore text eol=lf
+LICENSE text eol=lf
 *.py text eol=lf
 *.md text eol=lf
 *.txt text eol=lf
@@ -8,3 +11,25 @@
 *.toml text eol=lf
 *.json text eol=lf
 *.csv text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Scientific data, models, archives, and figures are binary.
+*.pkl binary
+*.pickle binary
+*.npy binary
+*.npz binary
+*.joblib binary
+*.h5 binary
+*.hdf5 binary
+*.parquet binary
+*.feather binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.zip binary
+*.7z binary
+*.gz binary

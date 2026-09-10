@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
+from common import format_signal_summary, save_pickle, subject_sort_key, summarize_signal
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -13,13 +14,6 @@ OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "kalman"
 PROCESS_VARIANCE = 1e-5
 MEASUREMENT_VARIANCE = 1e-2
 INITIAL_ESTIMATE_ERROR = 1.0
-
-
-def subject_sort_key(path):
-    name = path.stem
-    if name.startswith("S") and name[1:].isdigit():
-        return int(name[1:])
-    return name
 
 
 def kalman_filter_1d(
@@ -49,24 +43,7 @@ def kalman_filter_1d(
     return estimates
 
 
-def summarize_signal(values):
-    values = np.asarray(values).reshape(-1)
-    return {
-        "mean": float(np.mean(values)),
-        "std": float(np.std(values)),
-        "min": float(np.min(values)),
-        "max": float(np.max(values)),
-    }
-
-
-def format_summary(summary):
-    return (
-        f"mean={summary['mean']:.6f}, std={summary['std']:.6f}, "
-        f"min={summary['min']:.6f}, max={summary['max']:.6f}"
-    )
-
-
-def process_one_pkl(input_pkl_path, output_pkl_path, overwrite=False):
+def process_subject(input_pkl_path, output_pkl_path, overwrite=False):
     if output_pkl_path.exists() and not overwrite:
         raise FileExistsError(
             f"output already exists: {output_pkl_path} "
@@ -85,11 +62,7 @@ def process_one_pkl(input_pkl_path, output_pkl_path, overwrite=False):
 
     data["signal"]["wrist"]["BVP"] = filtered_bvp
 
-    output_pkl_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = output_pkl_path.with_suffix(output_pkl_path.suffix + ".tmp")
-    with temp_path.open("wb") as file:
-        pickle.dump(data, file, protocol=pickle.HIGHEST_PROTOCOL)
-    temp_path.replace(output_pkl_path)
+    save_pickle(data, output_pkl_path)
 
     return {
         "subject": data.get("subject", input_pkl_path.stem),
@@ -149,7 +122,7 @@ def main():
         subject = input_pkl_path.stem
         output_pkl_path = args.output_dir / subject / f"{subject}.pkl"
 
-        result = process_one_pkl(
+        result = process_subject(
             input_pkl_path=input_pkl_path,
             output_pkl_path=output_pkl_path,
             overwrite=args.overwrite,
@@ -159,8 +132,8 @@ def main():
         print(f"  input: {result['input_pkl']}")
         print(f"  output: {result['output_pkl']}")
         print(f"  BVP shape: {result['shape']}")
-        print(f"  before: {format_summary(result['before'])}")
-        print(f"  after:  {format_summary(result['after'])}")
+        print(f"  before: {format_signal_summary(result['before'])}")
+        print(f"  after:  {format_signal_summary(result['after'])}")
         print()
 
 

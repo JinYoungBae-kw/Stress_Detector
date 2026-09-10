@@ -28,10 +28,17 @@ NONLINEAR_FEATURE_NAMES = [
     "correlation_dimension_d2",
 ]
 
+SHORT_TERM_HR_FEATURE_NAMES = [
+    "reactivity_peak_rise_bpm",
+    "short_hr_max_bpm",
+    "short_hr_range_bpm",
+]
+
 FEATURE_NAMES = (
     TIME_DOMAIN_FEATURE_NAMES
     + FREQUENCY_DOMAIN_FEATURE_NAMES
     + NONLINEAR_FEATURE_NAMES
+    + SHORT_TERM_HR_FEATURE_NAMES
 )
 
 HRV_INTERP_FS = 4.0
@@ -50,6 +57,10 @@ D2_EMBED_DIM = 10
 D2_LAG = 1
 D2_NUM_RADII = 20
 D2_MIN_POINTS = 20
+
+HR_BIN_SECONDS = 10
+MIN_HR_PROFILE_COVERAGE = 0.8
+EARLY_BASELINE_SECONDS = 60
 
 
 def subject_sort_key(path):
@@ -247,12 +258,80 @@ def extract_nonlinear_features(nn_sec):
     )
 
 
-def extract_features(nn_sec):
+def heart_rate_profile(
+    peak_indices,
+    bvp_hz,
+    window_seconds,
+    bin_seconds=HR_BIN_SECONDS,
+):
+    profile_size = int(round(window_seconds / bin_seconds))
+    profile = np.full(profile_size, np.nan, dtype=np.float64)
+
+    peaks = np.unique(np.asarray(peak_indices, dtype=np.float64).reshape(-1))
+    peaks = peaks[np.isfinite(peaks)]
+    if len(peaks) < 2:
+        return profile
+
+    nn_seconds = np.diff(peaks) / bvp_hz
+    beat_seconds = peaks[1:] / bvp_hz
+    valid = np.isfinite(nn_seconds) & (nn_seconds > 0)
+    heart_rate = 60.0 / nn_seconds[valid]
+    beat_seconds = beat_seconds[valid]
+
+    for index in range(profile_size):
+        lower = index * bin_seconds
+        upper = (index + 1) * bin_seconds
+        in_bin = (beat_seconds >= lower) & (beat_seconds < upper)
+        if np.any(in_bin):
+            profile[index] = np.median(heart_rate[in_bin])
+
+    minimum_bins = int(np.ceil(profile_size * MIN_HR_PROFILE_COVERAGE))
+    finite = np.isfinite(profile)
+    if np.sum(finite) >= minimum_bins:
+        positions = np.arange(profile_size)
+        profile = np.interp(positions, positions[finite], profile[finite])
+
+    return profile
+
+
+def extract_short_term_hr_features(peak_indices, bvp_hz, window_seconds):
+    heart_rate = heart_rate_profile(
+        peak_indices,
+        bvp_hz=bvp_hz,
+        window_seconds=window_seconds,
+    )
+    if not np.all(np.isfinite(heart_rate)):
+        return np.full(
+            len(SHORT_TERM_HR_FEATURE_NAMES),
+            np.nan,
+            dtype=np.float64,
+        )
+
+    early_bins = max(1, int(round(EARLY_BASELINE_SECONDS / HR_BIN_SECONDS)))
+    early_heart_rate = np.median(heart_rate[:early_bins])
+    maximum_heart_rate = np.max(heart_rate)
+
+    return np.asarray(
+        [
+            maximum_heart_rate - early_heart_rate,
+            maximum_heart_rate,
+            np.ptp(heart_rate),
+        ],
+        dtype=np.float64,
+    )
+
+
+def extract_features(nn_sec, peak_indices, bvp_hz, window_seconds):
     return np.concatenate(
         [
             extract_time_domain_features(nn_sec),
             extract_frequency_domain_features(nn_sec),
             extract_nonlinear_features(nn_sec),
+            extract_short_term_hr_features(
+                peak_indices,
+                bvp_hz,
+                window_seconds,
+            ),
         ]
     )
 
@@ -266,11 +345,25 @@ def process_subject(npz_path, output_path, overwrite=False):
 
     data = np.load(npz_path, allow_pickle=True)
     nn_intervals_sec = data["nn_intervals_sec"]
+    corrected_peak_indices = data["corrected_peak_indices"]
     y = data["y"].astype(np.int8)
+    bvp_hz = float(np.asarray(data["bvp_hz"]).item())
+    window_seconds = float(np.asarray(data["window_seconds"]).item())
+
+    if len(nn_intervals_sec) != len(corrected_peak_indices):
+        raise ValueError(f"window alignment mismatch in {npz_path}")
 
     feature_rows = [
-        extract_features(window_nn_sec)
-        for window_nn_sec in nn_intervals_sec
+        extract_features(
+            window_nn_sec,
+            window_peak_indices,
+            bvp_hz,
+            window_seconds,
+        )
+        for window_nn_sec, window_peak_indices in zip(
+            nn_intervals_sec,
+            corrected_peak_indices,
+        )
     ]
     X_features = np.vstack(feature_rows).astype(np.float64)
     feature_names = np.asarray(FEATURE_NAMES)
@@ -307,6 +400,10 @@ def process_subject(npz_path, output_path, overwrite=False):
         d2_lag=np.asarray(D2_LAG),
         d2_num_radii=np.asarray(D2_NUM_RADII),
         d2_min_points=np.asarray(D2_MIN_POINTS),
+        short_term_hr_feature_names=np.asarray(SHORT_TERM_HR_FEATURE_NAMES),
+        hr_bin_seconds=np.asarray(HR_BIN_SECONDS),
+        minimum_hr_profile_coverage=np.asarray(MIN_HR_PROFILE_COVERAGE),
+        early_baseline_seconds=np.asarray(EARLY_BASELINE_SECONDS),
         source_npz=np.asarray(str(npz_path)),
     )
 
@@ -343,7 +440,10 @@ def write_summary(summary_path, rows):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Extract feature matrices from NN interval files."
+        description=(
+            "Extract baseline and short-term HR feature matrices from "
+            "corrected NN interval files."
+        )
     )
     parser.add_argument(
         "--input-dir",

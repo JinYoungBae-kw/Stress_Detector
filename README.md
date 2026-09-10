@@ -1,14 +1,15 @@
-# Physiologically Corrected Wrist-PPG Stress Classification
+# Wrist-PPG Stress Classification with Short-Term HR Features
 
 This repository contains the final wrist-PPG stress-classification pipeline
 used in our study. It processes WESAD wrist blood volume pulse (BVP), corrects
 detected peaks that produce physiologically implausible short NN intervals,
-extracts seven HRV-related features, and evaluates an RBF SVM with
-Leave-One-Subject-Out (LOSO) cross-validation.
+extracts 10 features, and evaluates an RBF SVM with Leave-One-Subject-Out
+(LOSO) cross-validation.
 
 The implementation is based on the signal-processing and feature framework
-described by Jahanjoo et al. and retains only the final experimental
-configuration used in this project.
+described by Jahanjoo et al. Seven baseline features are retained from that
+framework, and three short-term HR features developed in this study are added.
+Only the final configuration is included.
 
 ## Study scope
 
@@ -21,6 +22,7 @@ configuration used in this project.
 - Final preprocessing: 0.5-3.5 Hz band-pass, Kalman filter, 3-point moving average
 - Segmentation: 360-second Hann windows with a 30-second stride
 - Peak correction: remove one adjacent peak when a detected NN interval is shorter than 0.30 seconds
+- Features: seven baseline HRV-related features and three short-term HR features
 
 Amusement and all other protocol labels are excluded from model training.
 
@@ -36,6 +38,7 @@ Amusement and all other protocol labels are excluded from model training.
 |   |-- preprocess/
 |   |   |-- label_simplification.py
 |   |   |-- bandpass.py
+|   |   |-- common.py
 |   |   |-- kalman.py
 |   |   |-- moving_average.py
 |   |   `-- hanning_windows.py
@@ -110,6 +113,10 @@ Each script also supports `--help`. Input and output directories can be
 overridden through CLI arguments, except for the fixed physiological and model
 parameters listed below.
 
+The final feature files are written to `data/features/train_features`. Each
+subject file contains the same 10 ordered feature columns consumed directly by
+`train_svm.py`; no separate feature-merging step is required.
+
 ## Processing stages
 
 | Stage | Script | Main operation |
@@ -121,13 +128,18 @@ parameters listed below.
 | Segmentation | `hanning_windows.py` | 360-second Hann windows, 30-second stride; mixed and ignored-label windows are removed |
 | Peak detection | `detect_peaks.py` | Local maxima above the subject-level mean windowed-signal amplitude |
 | Peak correction | `nn_intervals.py` | Corrects short NN intervals by deleting the locally less plausible adjacent peak |
-| Feature extraction | `extract_features.py` | Produces seven time-, frequency-, and nonlinear-domain features |
+| Feature extraction | `extract_features.py` | Produces all 10 final features in one subject-level NPZ file |
 | Classification | `train_svm.py` | LOSO evaluation and final full-data SVM/SHAP generation |
 
 Long NN intervals above 2.00 seconds are reported for quality assessment but
 are not corrected.
 
 ## Extracted features
+
+`extract_features.py` calculates all features below in a single pass and saves
+them together in `data/features/train_features/S*.npz`.
+
+### Baseline features
 
 | Feature | Description |
 |---|---|
@@ -138,6 +150,19 @@ are not corrected.
 | `total_power_ms2` | Sum of ULF, VLF, LF, and HF spectral power |
 | `approx_entropy` | Approximate entropy of the NN sequence |
 | `correlation_dimension_d2` | Correlation-dimension estimate of NN dynamics |
+
+### Added short-term HR features
+
+Corrected beat locations are converted into a 10-second HR profile for each
+360-second window. A profile is retained when at least 80% of its bins contain
+valid values; missing bins are then linearly interpolated. The following three
+features are then appended to the baseline features in the same output file.
+
+| Added feature | Description |
+|---|---|
+| `reactivity_peak_rise_bpm` | Maximum 10-second HR minus the median HR during the first 60 seconds |
+| `short_hr_max_bpm` | Maximum 10-second HR within the window |
+| `short_hr_range_bpm` | Difference between maximum and minimum 10-second HR within the window |
 
 Rows containing non-finite feature values are excluded inside each LOSO fold
 before model fitting and evaluation.
@@ -154,11 +179,15 @@ StandardScaler
 Stress is label 0 and is explicitly treated as the positive class for F1 and
 ROC AUC. Reported values are the mean of the 15 subject-level LOSO folds.
 
-| Metric | Mean |
-|---|---:|
-| Accuracy | 94.08% |
-| Stress F1 | 88.96% |
-| Stress ROC AUC | 99.91% |
+| Feature set | Accuracy | Stress F1 | Stress ROC AUC |
+|---|---:|---:|---:|
+| Baseline, 7 features | 94.08% | 88.96% | 99.91% |
+| Extended, 10 features | 97.01% | 94.88% | 99.98% |
+
+The final model uses the same preprocessing, folds, scaler, SVM, labels, and
+random seed as the baseline; only the three added features differ. The current
+pipeline writes the final 10-feature set directly to
+`data/features/train_features`.
 
 The final full-data model is generated only after LOSO evaluation. Its SHAP
 results explain that fitted model and are not used to calculate the LOSO
@@ -170,6 +199,11 @@ performance. See [outputs/README.md](outputs/README.md) for generated files.
 - The default SVM uses no class weighting.
 - All scientific Python dependencies are pinned in `requirements.txt`.
 - Intermediate data and trained artifacts are ignored by Git.
+- WESAD and all derived files must remain outside version control and are not
+  covered by the MIT license.
+- The fixed extended feature set was developed on WESAD. Its LOSO result is a
+  descriptive internal estimate; confirmatory evaluation requires an
+  independent cohort.
 - Reproducing the table requires the unchanged original WESAD PKL files and
   the default parameters in the scripts.
 - The repository contains research code and is not a medical device.
@@ -189,4 +223,5 @@ performance. See [outputs/README.md](outputs/README.md) for generated files.
 ## License
 
 The source code is released under the [MIT License](LICENSE). WESAD data is not
-included and remains subject to the original dataset terms.
+included and remains subject to the original dataset terms. This repository is
+research software and is not intended for clinical diagnosis or treatment.

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
+from common import subject_sort_key
 
 LABEL_HZ = 700
 BVP_HZ = 64
@@ -46,13 +47,6 @@ def build_bvp_labels(labels, bvp_length):
     return bvp_labels
 
 
-def subject_sort_key(path):
-    name = path.name
-    if name.startswith("S") and name[1:].isdigit():
-        return int(name[1:])
-    return name
-
-
 def counts_by_seconds(labels, sample_rate):
     counts = Counter(np.asarray(labels).tolist())
     return {
@@ -71,7 +65,7 @@ def format_counts(counts):
     )
 
 
-def preprocess_one_pkl(raw_pkl_path, labeled_pkl_path, overwrite=False):
+def process_subject(raw_pkl_path, labeled_pkl_path, overwrite=False):
     if labeled_pkl_path.exists() and not overwrite:
         raise FileExistsError(
             f"output already exists: {labeled_pkl_path} "
@@ -167,7 +161,7 @@ def main():
             print(f"[skip] {subject}: missing {raw_pkl_path}")
             continue
 
-        result = preprocess_one_pkl(
+        result = process_subject(
             raw_pkl_path=raw_pkl_path,
             labeled_pkl_path=labeled_pkl_path,
             overwrite=args.overwrite,

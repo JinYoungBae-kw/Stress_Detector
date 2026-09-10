@@ -5,17 +5,11 @@ from pathlib import Path
 
 import numpy as np
 
+from common import subject_sort_key
 
 BVP_HZ = 64
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WINDOW_FUNCTION = "hanning"
-
-
-def subject_sort_key(path):
-    name = path.stem
-    if name.startswith("S") and name[1:].isdigit():
-        return int(name[1:])
-    return name
 
 
 def iter_windows(signal_length, window_samples, stride_samples):

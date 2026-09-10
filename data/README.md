@@ -13,14 +13,26 @@ data/
 |   |-- S3/S3.pkl
 |   |-- ...
 |   `-- S17/S17.pkl
-|-- labeled/
+|-- labeled/S*/S*.pkl
 |-- preprocessed/
-|-- windowed/
+|   |-- bandpass/S*/S*.pkl
+|   |-- kalman/S*/S*.pkl
+|   |-- moving_average/S*/S*.pkl
+|   `-- all_preprocessed/S*/S*.pkl
+|-- windowed/S*.npz
 `-- features/
+    |-- peaks/S*.npz
+    |-- intervals/S*.npz
+    `-- train_features/S*.npz
 ```
 
 The pipeline creates every directory except `data/raw`. The expected WESAD
-cohort contains 15 subject files: S2-S11 and S13-S17.
+cohort contains 15 subject files: S2-S11 and S13-S17. The final
+`train_features` files contain seven baseline features and three added
+short-term HR features in one matrix.
+
+All raw and derived files under `data` are ignored by Git. Only this README is
+tracked. Use `--overwrite` when intentionally regenerating an existing stage.
 
 WESAD is available for scientific, non-commercial use under the terms stated
 by its owners. It is not covered by this repository's MIT license. Only load
