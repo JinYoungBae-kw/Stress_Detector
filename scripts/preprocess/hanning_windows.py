@@ -155,10 +155,10 @@ def main():
     parser.add_argument(
         "--preprocessed-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "preprocessed" / "all_preprocessed",
+        default=PROJECT_ROOT / "data" / "preprocessed" / "moving_average",
         help=(
             "Directory containing final preprocessed subject PKL files. "
-            "Default: <project>/data/preprocessed/all_preprocessed"
+            "Default: <project>/data/preprocessed/moving_average"
         ),
     )
     parser.add_argument(

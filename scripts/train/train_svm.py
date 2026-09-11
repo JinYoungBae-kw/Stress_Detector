@@ -1,6 +1,8 @@
 import argparse
 import csv
+import hashlib
 import json
+import shutil
 from pathlib import Path
 
 import joblib
@@ -10,7 +12,19 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
+import pandas as pd
+from scipy.stats import t as student_t
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
+    matthews_corrcoef,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
@@ -19,13 +33,31 @@ from sklearn.svm import SVC
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 FEATURE_DIR = PROJECT_ROOT / "data" / "features" / "train_features"
-TRAIN_RESULT_DIR = PROJECT_ROOT / "outputs" / "train_result"
-MODEL_DIR = PROJECT_ROOT / "outputs" / "model"
-SHAP_DIR = PROJECT_ROOT / "outputs" / "shap"
+OUTPUT_ROOT = PROJECT_ROOT / "outputs"
 
 STRESS_LABEL = 0
 NONSTRESS_LABEL = 1
 RANDOM_SEED = 42
+BASELINE_FEATURES = [
+    "hrm_bpm",
+    "hrsd_bpm",
+    "mnn_ms",
+    "pnn50_percent",
+    "total_power_ms2",
+    "approx_entropy",
+    "correlation_dimension_d2",
+]
+METRIC_COLUMNS = [
+    "accuracy",
+    "roc_auc",
+    "average_precision",
+    "precision",
+    "recall",
+    "specificity",
+    "f1",
+    "balanced_accuracy",
+    "mcc",
+]
 
 
 def subject_sort_key(path):
@@ -35,11 +67,17 @@ def subject_sort_key(path):
     return name
 
 
-def load_subject_feature_file(npz_path):
+def load_subject_feature_file(npz_path, selected_features=None):
     data = np.load(npz_path, allow_pickle=True)
     X = np.asarray(data["X"], dtype=np.float64)
     y = np.asarray(data["y"], dtype=np.int8)
-    feature_names = [str(name) for name in data["feature_names"]]
+    all_feature_names = [str(name) for name in data["feature_names"]]
+    feature_names = selected_features or all_feature_names
+    missing = sorted(set(feature_names) - set(all_feature_names))
+    if missing:
+        raise ValueError(f"missing features in {npz_path}: {missing}")
+    indices = [all_feature_names.index(name) for name in feature_names]
+    X = X[:, indices]
     subject = str(np.asarray(data["subject"]).item()) if "subject" in data else npz_path.stem
 
     finite_rows = np.all(np.isfinite(X), axis=1)
@@ -89,6 +127,37 @@ def write_csv(path, rows, fieldnames):
         writer.writerows(rows)
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def feature_data_hash(paths):
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(file_sha256(path).encode("ascii"))
+    return digest.hexdigest()
+
+
+def prepare_output_dirs(paths, overwrite):
+    for path in paths:
+        if path.exists() and any(path.iterdir()):
+            if not overwrite:
+                raise FileExistsError(
+                    f"output directory already contains files: {path} "
+                    "(use --overwrite to replace them)"
+                )
+            resolved = path.resolve()
+            if resolved in {Path(resolved.anchor), PROJECT_ROOT.resolve(), OUTPUT_ROOT.resolve()}:
+                raise ValueError(f"refusing to clear protected directory: {resolved}")
+            shutil.rmtree(path)
+        path.mkdir(parents=True, exist_ok=True)
+
+
 def stress_decision_scores(model, X):
     scores = model.decision_function(X)
     classes = list(model.named_steps["svm"].classes_)
@@ -99,11 +168,138 @@ def stress_decision_scores(model, X):
     raise ValueError(f"unexpected SVM classes: {classes}")
 
 
-def stress_auc_score(y_true, stress_scores):
-    stress_binary = (y_true == STRESS_LABEL).astype(np.int8)
-    if len(np.unique(stress_binary)) < 2:
-        return np.nan
-    return float(roc_auc_score(stress_binary, stress_scores))
+def calculate_metrics(y_true, y_pred, stress_scores):
+    truth = (np.asarray(y_true) == STRESS_LABEL).astype(np.int8)
+    predicted = (np.asarray(y_pred) == STRESS_LABEL).astype(np.int8)
+    tn, fp, fn, tp = confusion_matrix(truth, predicted, labels=[0, 1]).ravel()
+    specificity = tn / (tn + fp) if tn + fp else np.nan
+    has_both_classes = len(np.unique(truth)) == 2
+    return {
+        "accuracy": float(accuracy_score(truth, predicted)),
+        "roc_auc": (
+            float(roc_auc_score(truth, stress_scores)) if has_both_classes else np.nan
+        ),
+        "average_precision": (
+            float(average_precision_score(truth, stress_scores))
+            if has_both_classes
+            else np.nan
+        ),
+        "precision": float(precision_score(truth, predicted, zero_division=0)),
+        "recall": float(recall_score(truth, predicted, zero_division=0)),
+        "specificity": float(specificity),
+        "f1": float(f1_score(truth, predicted, zero_division=0)),
+        "balanced_accuracy": float(balanced_accuracy_score(truth, predicted)),
+        "mcc": float(matthews_corrcoef(truth, predicted)),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tp": int(tp),
+    }
+
+
+def confidence_interval(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    mean = float(np.mean(values))
+    if len(values) <= 1:
+        return mean, np.nan, np.nan
+    critical = float(student_t.ppf(0.975, df=len(values) - 1))
+    margin = critical * float(np.std(values, ddof=1) / np.sqrt(len(values)))
+    return mean, mean - margin, mean + margin
+
+
+def validate_comparison_configs(output_root):
+    configs = {}
+    for feature_set in ("baseline", "extended"):
+        path = output_root / "loso" / feature_set / "train_result" / "config.json"
+        if not path.exists():
+            raise FileNotFoundError(f"missing training configuration: {path}")
+        configs[feature_set] = json.loads(path.read_text(encoding="utf-8"))
+    for field in (
+        "feature_data_sha256",
+        "training_script_sha256",
+        "seed",
+        "class_weight",
+    ):
+        if configs["baseline"].get(field) != configs["extended"].get(field):
+            raise ValueError(f"baseline and extended settings differ: {field}")
+    return int(configs["extended"]["seed"])
+
+
+def save_metrics_difference(output_root, iterations=2000):
+    seed = validate_comparison_configs(output_root)
+    result_root = output_root / "loso"
+    frames = {}
+    required = ["test_subject", "sample_index", "y_true", "y_pred", "stress_score"]
+    for feature_set in ("baseline", "extended"):
+        path = result_root / feature_set / "train_result" / "predictions.csv"
+        frame = pd.read_csv(path)
+        missing = sorted(set(required) - set(frame.columns))
+        if missing:
+            raise ValueError(f"missing columns in {path}: {missing}")
+        frames[feature_set] = frame[required]
+
+    paired = frames["baseline"].merge(
+        frames["extended"],
+        on=["test_subject", "sample_index"],
+        suffixes=("_baseline", "_extended"),
+        validate="one_to_one",
+    )
+    if len(paired) != len(frames["baseline"]) or len(paired) != len(frames["extended"]):
+        raise ValueError("baseline and extended predictions cover different windows")
+    if not np.array_equal(paired["y_true_baseline"], paired["y_true_extended"]):
+        raise ValueError("baseline and extended labels differ")
+
+    subject_metrics = {feature_set: [] for feature_set in ("baseline", "extended")}
+    for subject, group in paired.groupby("test_subject", sort=False):
+        for feature_set in subject_metrics:
+            subject_metrics[feature_set].append(
+                {
+                    "subject": subject,
+                    **calculate_metrics(
+                        group["y_true_baseline"],
+                        group[f"y_pred_{feature_set}"],
+                        group[f"stress_score_{feature_set}"],
+                    ),
+                }
+            )
+    subject_metrics = {
+        key: pd.DataFrame(value).set_index("subject") for key, value in subject_metrics.items()
+    }
+    if not subject_metrics["baseline"].index.equals(subject_metrics["extended"].index):
+        raise ValueError("baseline and extended subject order differs")
+
+    observed_baseline = subject_metrics["baseline"][METRIC_COLUMNS].mean()
+    observed_extended = subject_metrics["extended"][METRIC_COLUMNS].mean()
+    subject_differences = (
+        subject_metrics["extended"][METRIC_COLUMNS]
+        - subject_metrics["baseline"][METRIC_COLUMNS]
+    ).to_numpy()
+    rng = np.random.default_rng(seed)
+    bootstrap = np.empty((iterations, len(METRIC_COLUMNS)), dtype=float)
+    for index in range(iterations):
+        sample = rng.integers(0, len(subject_differences), len(subject_differences))
+        bootstrap[index] = np.nanmean(subject_differences[sample], axis=0)
+
+    rows = []
+    for index, metric in enumerate(METRIC_COLUMNS):
+        low, high = np.percentile(bootstrap[:, index], [2.5, 97.5])
+        rows.append(
+            {
+                "metric": metric,
+                "baseline": observed_baseline[metric],
+                "extended": observed_extended[metric],
+                "difference": observed_extended[metric] - observed_baseline[metric],
+                "ci95_low": float(low),
+                "ci95_high": float(high),
+                "ci_excludes_zero": bool(low > 0 or high < 0),
+                "higher_is_better": True,
+                "bootstrap_iterations": iterations,
+            }
+        )
+    output_path = result_root / "metrics_difference.csv"
+    pd.DataFrame(rows).to_csv(output_path, index=False)
+    return output_path
 
 
 def compute_and_save_shap(model, X, feature_names, output_dir, seed):
@@ -253,9 +449,9 @@ def train_and_save_full_model(
     return model_path, parameter_path
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train and evaluate SVM with Leave-One-Subject-Out validation."
+        description="Train baseline or extended SVM models with LOSO validation."
     )
     parser.add_argument(
         "--feature-dir",
@@ -264,56 +460,83 @@ def main():
         help="Directory containing subject feature NPZ files.",
     )
     parser.add_argument(
+        "--feature-set",
+        choices=["baseline", "extended"],
+        default="extended",
+        help="Use the original seven or all ten stress features. Default: extended.",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=OUTPUT_ROOT,
+        help="Root directory for evaluation outputs.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
-        default=TRAIN_RESULT_DIR,
-        help="Directory to write LOSO SVM evaluation results.",
+        default=None,
+        help="Override the automatic train_result directory.",
     )
     parser.add_argument(
         "--model-dir",
         type=Path,
-        default=MODEL_DIR,
-        help="Directory to write the model trained on all subjects.",
+        default=None,
+        help="Override the automatic model directory.",
     )
     parser.add_argument(
         "--shap-dir",
         type=Path,
-        default=SHAP_DIR,
-        help="Directory to write SHAP explanation results.",
+        default=None,
+        help="Override the automatic SHAP directory.",
     )
     parser.add_argument(
         "--class-weight",
         choices=["balanced", "none"],
         default="none",
-        help="SVM class weight. Default: none. Use balanced to compensate class imbalance.",
+        help="SVM class weight. Default: none.",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=RANDOM_SEED,
-        help=f"Random seed for reproducible runs. Default: {RANDOM_SEED}.",
+        help=f"Random seed. Default: {RANDOM_SEED}.",
     )
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Replace existing result files.",
+        help="Replace files for the selected feature set.",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
     np.random.seed(args.seed)
 
-    if not args.overwrite:
-        for output_dir in [args.output_dir, args.model_dir, args.shap_dir]:
-            if output_dir.exists() and any(output_dir.iterdir()):
-                raise FileExistsError(
-                    f"output directory already contains files: {output_dir} "
-                    "(use --overwrite to replace them)"
-                )
+    experiment_dir = args.output_root / "loso" / args.feature_set
+    train_result_dir = args.output_dir or experiment_dir / "train_result"
+    model_dir = args.model_dir or experiment_dir / "model"
+    shap_dir = args.shap_dir or experiment_dir / "shap"
+    standard_output_layout = all(
+        path is None for path in (args.output_dir, args.model_dir, args.shap_dir)
+    )
+    comparison_path = args.output_root / "loso" / "metrics_difference.csv"
+    if standard_output_layout and args.feature_set == "baseline":
+        comparison_path.unlink(missing_ok=True)
+    prepare_output_dirs(
+        [train_result_dir, model_dir, shap_dir],
+        overwrite=args.overwrite,
+    )
 
     npz_paths = sorted(args.feature_dir.glob("S*.npz"), key=subject_sort_key)
     if not npz_paths:
         raise FileNotFoundError(f"no feature NPZ files found in {args.feature_dir}")
 
-    subjects = [load_subject_feature_file(path) for path in npz_paths]
+    selected_features = BASELINE_FEATURES if args.feature_set == "baseline" else None
+    subjects = [
+        load_subject_feature_file(path, selected_features=selected_features)
+        for path in npz_paths
+    ]
     feature_names = subjects[0]["feature_names"]
     for subject_data in subjects:
         if subject_data["feature_names"] != feature_names:
@@ -322,30 +545,42 @@ def main():
             raise ValueError(f"feature shape mismatch in {subject_data['source']}")
 
     class_weight = "balanced" if args.class_weight == "balanced" else None
+    config = {
+        "feature_dir": str(args.feature_dir.resolve()),
+        "feature_data_sha256": feature_data_hash(npz_paths),
+        "training_script_sha256": file_sha256(Path(__file__).resolve()),
+        "feature_set": args.feature_set,
+        "feature_names": feature_names,
+        "subjects": [subject_data["subject"] for subject_data in subjects],
+        "seed": args.seed,
+        "class_weight": args.class_weight,
+        "evaluation": "leave-one-subject-out",
+        "positive_class": "stress (source label 0)",
+        "model": "StandardScaler + SVC(kernel=rbf, C=1.0, gamma=scale)",
+    }
+    (train_result_dir / "config.json").write_text(
+        json.dumps(config, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
-    fold_rows = []
+    subject_rows = []
     prediction_rows = []
-
+    print(f"feature_set: {args.feature_set}")
     print(f"feature_dir: {args.feature_dir}")
-    print(f"train_result_dir: {args.output_dir}")
-    print(f"model_dir: {args.model_dir}")
-    print(f"shap_dir: {args.shap_dir}")
     print(f"subjects: {len(subjects)}")
-    print(f"features: {', '.join(feature_names)}")
+    print(f"features ({len(feature_names)}): {', '.join(feature_names)}")
     print(
         "model: StandardScaler + "
-        f"SVC(kernel=rbf, C=1.0, gamma=scale, class_weight={class_weight}, "
-        f"random_state={args.seed})"
+        f"SVC(kernel=rbf, C=1.0, gamma=scale, class_weight={class_weight})"
     )
-    print("metrics: accuracy, f1_score(pos_label=stress=0), auc_stress")
-    print(f"seed: {args.seed}")
     print()
 
     for test_index, test_subject_data in enumerate(subjects):
         train_subjects = [
-            subject_data for index, subject_data in enumerate(subjects) if index != test_index
+            subject_data
+            for index, subject_data in enumerate(subjects)
+            if index != test_index
         ]
-
         X_train = np.vstack([subject_data["X"] for subject_data in train_subjects])
         y_train = np.concatenate([subject_data["y"] for subject_data in train_subjects])
         X_test = test_subject_data["X"]
@@ -355,26 +590,7 @@ def main():
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         stress_scores = stress_decision_scores(model, X_test)
-
-        accuracy = accuracy_score(y_test, y_pred)
-        f1_stress = f1_score(
-            y_test,
-            y_pred,
-            pos_label=STRESS_LABEL,
-            labels=[STRESS_LABEL, NONSTRESS_LABEL],
-            zero_division=0,
-        )
-        auc_stress = stress_auc_score(y_test, stress_scores)
-        cm = confusion_matrix(
-            y_test,
-            y_pred,
-            labels=[STRESS_LABEL, NONSTRESS_LABEL],
-        )
-        tn_stress = int(cm[1, 1])
-        fp_stress = int(cm[1, 0])
-        fn_stress = int(cm[0, 1])
-        tp_stress = int(cm[0, 0])
-
+        metrics = calculate_metrics(y_test, y_pred, stress_scores)
         row = {
             "test_subject": test_subject_data["subject"],
             "train_samples": int(len(y_train)),
@@ -384,135 +600,87 @@ def main():
             "test_stress": count_label(y_test, STRESS_LABEL),
             "test_nonstress": count_label(y_test, NONSTRESS_LABEL),
             "removed_test_rows": test_subject_data["removed_rows"],
-            "accuracy": float(accuracy),
-            "f1_stress": float(f1_stress),
-            "auc_stress": float(auc_stress),
-            "tp_stress": tp_stress,
-            "fn_stress": fn_stress,
-            "fp_stress": fp_stress,
-            "tn_stress": tn_stress,
+            **{metric: metrics[metric] for metric in METRIC_COLUMNS},
+            "tp_stress": metrics["tp"],
+            "fn_stress": metrics["fn"],
+            "fp_stress": metrics["fp"],
+            "tn_stress": metrics["tn"],
         }
-        fold_rows.append(row)
+        subject_rows.append(row)
 
-        for sample_index, (truth, pred, score) in enumerate(zip(y_test, y_pred, stress_scores)):
+        for sample_index, (truth, prediction, score) in enumerate(
+            zip(y_test, y_pred, stress_scores)
+        ):
             prediction_rows.append(
                 {
                     "test_subject": test_subject_data["subject"],
                     "sample_index": sample_index,
                     "y_true": int(truth),
-                    "y_pred": int(pred),
+                    "y_pred": int(prediction),
                     "stress_score": float(score),
-                    "correct": int(truth == pred),
+                    "correct": int(truth == prediction),
                 }
             )
 
-        print(f"[fold] test={row['test_subject']}")
-        print(f"  train samples: {row['train_samples']}")
-        print(f"  test samples: {row['test_samples']}")
-        print(f"  accuracy: {row['accuracy']:.4f}")
-        print(f"  f1_stress: {row['f1_stress']:.4f}")
-        print(f"  auc_stress: {row['auc_stress']:.4f}")
         print(
-            "  confusion stress-positive: "
-            f"TP={tp_stress}, FN={fn_stress}, FP={fp_stress}, TN={tn_stress}"
+            f"[{test_index + 1:02d}/{len(subjects)}] "
+            f"{row['test_subject']}: accuracy={row['accuracy']:.3f}, "
+            f"F1={row['f1']:.3f}, AUC={row['roc_auc']:.3f}"
         )
-        print()
 
-    accuracies = np.asarray([row["accuracy"] for row in fold_rows], dtype=np.float64)
-    f1_scores = np.asarray([row["f1_stress"] for row in fold_rows], dtype=np.float64)
-    auc_scores = np.asarray([row["auc_stress"] for row in fold_rows], dtype=np.float64)
+    metrics_by_subject = pd.DataFrame(subject_rows)
+    metrics_by_subject.to_csv(
+        train_result_dir / "metrics_by_subject.csv",
+        index=False,
+    )
+    predictions = pd.DataFrame(prediction_rows)
+    predictions.to_csv(train_result_dir / "predictions.csv", index=False)
 
-    summary_rows = [
-        {
-            "metric": "accuracy",
-            "mean": float(np.mean(accuracies)),
-            "std": float(np.std(accuracies, ddof=1)) if len(accuracies) > 1 else 0.0,
-            "min": float(np.min(accuracies)),
-            "max": float(np.max(accuracies)),
-        },
-        {
-            "metric": "f1_stress",
-            "mean": float(np.mean(f1_scores)),
-            "std": float(np.std(f1_scores, ddof=1)) if len(f1_scores) > 1 else 0.0,
-            "min": float(np.min(f1_scores)),
-            "max": float(np.max(f1_scores)),
-        },
-        {
-            "metric": "auc_stress",
-            "mean": float(np.nanmean(auc_scores)),
-            "std": (
-                float(np.nanstd(auc_scores, ddof=1))
-                if np.sum(~np.isnan(auc_scores)) > 1
-                else 0.0
-            ),
-            "min": float(np.nanmin(auc_scores)),
-            "max": float(np.nanmax(auc_scores)),
-        },
-    ]
-
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    write_csv(
-        args.output_dir / "loso_results.csv",
-        fold_rows,
-        [
-            "test_subject",
-            "train_samples",
-            "test_samples",
-            "train_stress",
-            "train_nonstress",
-            "test_stress",
-            "test_nonstress",
-            "removed_test_rows",
-            "accuracy",
-            "f1_stress",
-            "auc_stress",
-            "tp_stress",
-            "fn_stress",
-            "fp_stress",
-            "tn_stress",
-        ],
-    )
-    write_csv(
-        args.output_dir / "predictions.csv",
-        prediction_rows,
-        ["test_subject", "sample_index", "y_true", "y_pred", "stress_score", "correct"],
-    )
-    write_csv(
-        args.output_dir / "summary.csv",
-        summary_rows,
-        ["metric", "mean", "std", "min", "max"],
-    )
-
-    np.savez_compressed(
-        args.output_dir / "metadata.npz",
-        feature_names=np.asarray(feature_names),
-        class_weight=np.asarray(args.class_weight),
-        random_seed=np.asarray(args.seed),
-        stress_label=np.asarray(STRESS_LABEL),
-        nonstress_label=np.asarray(NONSTRESS_LABEL),
-        subjects=np.asarray([subject_data["subject"] for subject_data in subjects]),
-    )
+    summary_rows = []
+    for metric in METRIC_COLUMNS:
+        values = metrics_by_subject[metric]
+        estimate, low, high = confidence_interval(values)
+        finite = values[np.isfinite(values)]
+        summary_rows.append(
+            {
+                "metric": metric,
+                "estimate": estimate,
+                "std": float(finite.std(ddof=1)) if len(finite) > 1 else 0.0,
+                "ci95_low": low,
+                "ci95_high": high,
+                "min": float(finite.min()),
+                "max": float(finite.max()),
+                "n_subjects": int(len(finite)),
+                "aggregation": "mean_across_LOSO_subjects_t_interval",
+            }
+        )
+    metrics_summary = pd.DataFrame(summary_rows)
+    metrics_summary.to_csv(train_result_dir / "metrics_summary.csv", index=False)
 
     model_path, parameter_path = train_and_save_full_model(
         subjects=subjects,
         feature_names=feature_names,
         class_weight=class_weight,
         seed=args.seed,
-        model_dir=args.model_dir,
-        shap_dir=args.shap_dir,
+        model_dir=model_dir,
+        shap_dir=shap_dir,
     )
 
-    print("[summary]")
-    print(f"  accuracy mean/std: {np.mean(accuracies):.4f} / {np.std(accuracies, ddof=1):.4f}")
-    print(f"  f1_stress mean/std: {np.mean(f1_scores):.4f} / {np.std(f1_scores, ddof=1):.4f}")
-    print(
-        "  auc_stress mean/std: "
-        f"{np.nanmean(auc_scores):.4f} / {np.nanstd(auc_scores, ddof=1):.4f}"
-    )
-    print(f"training results written to: {args.output_dir}")
-    print(f"full-data model written to: {model_path}")
-    print(f"SVM parameters written to: {parameter_path}")
-    print(f"SHAP results written to: {args.shap_dir}")
+    comparison_output = None
+    if standard_output_layout and args.feature_set == "extended":
+        comparison_output = save_metrics_difference(args.output_root)
+
+    print("\n=== SVM LOSO Training Complete ===")
+    display = metrics_summary[["metric", "estimate", "ci95_low", "ci95_high"]].copy()
+    for column in ("estimate", "ci95_low", "ci95_high"):
+        display[column] = display[column].map(lambda value: f"{value:.3f}")
+    print(display.to_string(index=False))
+    print(f"Training results: {train_result_dir}")
+    print(f"Full-data model: {model_path}")
+    print(f"SVM parameters: {parameter_path}")
+    print(f"SHAP: {shap_dir}")
+    if comparison_output is not None:
+        print(f"Model comparison: {comparison_output}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 import argparse
 import pickle
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +10,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 INPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "kalman"
 OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "moving_average"
-FINAL_OUTPUT_DIR = PROJECT_ROOT / "data" / "preprocessed" / "all_preprocessed"
 
 WINDOW_SIZE = 3
 
@@ -35,15 +33,13 @@ def moving_average(values, window_size=WINDOW_SIZE):
 def process_subject(
     input_pkl_path,
     output_pkl_path,
-    final_output_pkl_path,
     overwrite=False,
 ):
-    for path in [output_pkl_path, final_output_pkl_path]:
-        if path.exists() and not overwrite:
-            raise FileExistsError(
-                f"output already exists: {path} "
-                "(use --overwrite to replace it)"
-            )
+    if output_pkl_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"output already exists: {output_pkl_path} "
+            "(use --overwrite to replace it)"
+        )
 
     with input_pkl_path.open("rb") as file:
         data = pickle.load(file, encoding="latin1")
@@ -58,14 +54,11 @@ def process_subject(
     data["signal"]["wrist"]["BVP"] = filtered_bvp
 
     save_pickle(data, output_pkl_path)
-    final_output_pkl_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(output_pkl_path, final_output_pkl_path)
 
     return {
         "subject": data.get("subject", input_pkl_path.stem),
         "input_pkl": input_pkl_path,
         "output_pkl": output_pkl_path,
-        "final_output_pkl": final_output_pkl_path,
         "shape": original_shape,
         "before": before,
         "after": after,
@@ -95,18 +88,9 @@ def main():
         ),
     )
     parser.add_argument(
-        "--final-output-dir",
-        type=Path,
-        default=FINAL_OUTPUT_DIR,
-        help=(
-            "Directory to write final all-preprocessed subject PKL files. "
-            "Default: <project>/data/preprocessed/all_preprocessed"
-        ),
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Replace existing moving-average and final PKL files.",
+        help="Replace existing moving-average PKL files.",
     )
     args = parser.parse_args()
 
@@ -116,7 +100,6 @@ def main():
 
     print(f"input_dir: {args.input_dir}")
     print(f"output_dir: {args.output_dir}")
-    print(f"final_output_dir: {args.final_output_dir}")
     print(f"filter: {WINDOW_SIZE}-point centered moving average")
     print(f"subjects: {len(pkl_paths)}")
     print()
@@ -124,19 +107,16 @@ def main():
     for input_pkl_path in pkl_paths:
         subject = input_pkl_path.stem
         output_pkl_path = args.output_dir / subject / f"{subject}.pkl"
-        final_output_pkl_path = args.final_output_dir / subject / f"{subject}.pkl"
 
         result = process_subject(
             input_pkl_path=input_pkl_path,
             output_pkl_path=output_pkl_path,
-            final_output_pkl_path=final_output_pkl_path,
             overwrite=args.overwrite,
         )
 
         print(f"[ok] {result['subject']}")
         print(f"  input: {result['input_pkl']}")
         print(f"  output: {result['output_pkl']}")
-        print(f"  final: {result['final_output_pkl']}")
         print(f"  BVP shape: {result['shape']}")
         print(f"  before: {format_signal_summary(result['before'])}")
         print(f"  after:  {format_signal_summary(result['after'])}")

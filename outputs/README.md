@@ -1,44 +1,36 @@
 # Outputs
 
-This directory contains generated artifacts and is not version controlled.
-
-Running `scripts/train/train_svm.py --overwrite` with the final 10-feature
-files creates:
+Generated results are excluded from Git. Training the Baseline model first and
+the Extended model second creates this layout:
 
 ```text
 outputs/
-|-- train_result/
-|   |-- loso_results.csv
-|   |-- predictions.csv
-|   |-- summary.csv
-|   `-- metadata.npz
-|-- model/
-|   |-- svm_pipeline.joblib
-|   |-- svm_parameters.npz
-|   `-- model_metadata.json
-`-- shap/
-    |-- shap_feature_importance.csv
-    |-- shap_summary_bar.png
-    |-- shap_summary_beeswarm.png
-    `-- shap_values.npz
+|-- loso/
+|   |-- metrics_difference.csv
+|   |-- baseline/
+|   |   |-- train_result/
+|   |   |-- model/
+|   |   `-- shap/
+|   `-- extended/
+|       |-- train_result/
+|       |-- model/
+|       `-- shap/
+`-- paper/
+    |-- tables/
+    |-- figures/
+    `-- paper_output_manifest.csv
 ```
 
-The files in `train_result` report held-out Leave-One-Subject-Out evaluation.
-The model and SHAP files are generated after fitting one final pipeline on all
-available subjects; they must not be interpreted as additional held-out
-performance estimates.
+Key files:
 
-`summary.csv` reports the unweighted mean, standard deviation, minimum, and
-maximum across the 15 subject-level folds. Stress is label 0 and is treated as
-the positive class for F1 and ROC AUC.
+- `metrics_summary.csv`: mean LOSO performance and 95% confidence intervals.
+- `metrics_by_subject.csv`: metrics for each held-out participant.
+- `predictions.csv`: held-out predictions and stress decision scores.
+- `metrics_difference.csv`: paired participant-bootstrap differences between
+  the two feature sets.
+- `shap_feature_importance.csv`: mean absolute SHAP ranking.
+- `paper_output_manifest.csv`: list and meaning of generated summary artifacts.
 
-The expected final mean scores are:
-
-| Metric | Mean |
-|---|---:|
-| Accuracy | 97.01% |
-| Stress F1 | 94.88% |
-| Stress ROC AUC | 99.98% |
-
-All generated files under `outputs` are ignored by Git. Only this README is
-tracked.
+The saved full-data model and its SHAP values are separate from held-out LOSO
+performance. Use `--overwrite` only when intentionally replacing a completed
+run.
